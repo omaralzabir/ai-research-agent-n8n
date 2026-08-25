@@ -1,0 +1,111 @@
+{
+  "name": "AI Research Agent (Apify + RAG)",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "research", "responseMode": "responseNode", "options": {} },
+      "id": "node-001", "name": "Webhook Trigger", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [240, 300]
+    },
+    {
+      "parameters": { "jsCode": "const body = $input.first().json.body;\nconst query = body.query || 'AI automation trends 2025';\nconst maxPages = body.max_pages || 5;\nif (!query) throw new Error('query is required');\nreturn [{ json: { query, maxPages } }];" },
+      "id": "node-002", "name": "Parse Input", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.apify.com/v2/acts/apify~website-content-crawler/runs",
+        "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={\n  \"startUrls\": [{\"url\": \"https://www.google.com/search?q={{ encodeURIComponent($json.query) }}\"}],\n  \"maxCrawlPages\": {{ $json.maxPages }},\n  \"crawlerType\": \"cheerio\"\n}",
+        "options": {}
+      },
+      "id": "node-003", "name": "Apify Web Scraper", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [680, 300],
+      "credentials": { "httpHeaderAuth": { "id": "APIFY_CRED", "name": "Apify API" } }
+    },
+    {
+      "parameters": { "url": "=https://api.apify.com/v2/datasets/{{ $json.data.defaultDatasetId }}/items?limit=50", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "options": {} },
+      "id": "node-004", "name": "Fetch Scraped Results", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [900, 300],
+      "credentials": { "httpHeaderAuth": { "id": "APIFY_CRED", "name": "Apify API" } }
+    },
+    {
+      "parameters": { "jsCode": "const items = $input.all();\nconst chunks = [];\nfor (const item of items) {\n  const text = item.json.text || item.json.content || '';\n  const url = item.json.url || '';\n  if (!text) continue;\n  const chunkSize = 2000;\n  const overlap = 200;\n  for (let i = 0; i < text.length; i += chunkSize - overlap) {\n    const chunk = text.slice(i, i + chunkSize);\n    if (chunk.trim().length < 100) continue;\n    chunks.push({ json: { text: chunk, source_url: url, chunk_index: chunks.length, timestamp: new Date().toISOString() } });\n  }\n}\nreturn chunks.slice(0, 20);" },
+      "id": "node-005", "name": "Text Chunker", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/embeddings", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={\"model\": \"text-embedding-3-small\", \"input\": {{ JSON.stringify($json.text) }}}",
+        "options": {}
+      },
+      "id": "node-006", "name": "OpenAI Embeddings", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1340, 300],
+      "credentials": { "httpHeaderAuth": { "id": "OPENAI_CRED", "name": "OpenAI API" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.pinecone.io/vectors/upsert", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={\"vectors\": [{\"id\": \"chunk_{{ $json.chunk_index }}_{{ Date.now() }}\", \"values\": {{ JSON.stringify($json.data[0].embedding) }}, \"metadata\": {\"text\": {{ JSON.stringify($json.text) }}, \"source_url\": {{ JSON.stringify($json.source_url) }}, \"timestamp\": {{ JSON.stringify($json.timestamp) }}}}]}",
+        "options": {}
+      },
+      "id": "node-007", "name": "Store in Pinecone", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1560, 300],
+      "credentials": { "httpHeaderAuth": { "id": "PINECONE_CRED", "name": "Pinecone API" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/embeddings", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={\"model\": \"text-embedding-3-small\", \"input\": {{ JSON.stringify($('Parse Input').first().json.query) }}}",
+        "options": {}
+      },
+      "id": "node-008", "name": "Embed Query", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1780, 300],
+      "credentials": { "httpHeaderAuth": { "id": "OPENAI_CRED", "name": "OpenAI API" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.pinecone.io/query", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={\"vector\": {{ JSON.stringify($json.data[0].embedding) }}, \"topK\": 5, \"includeMetadata\": true}",
+        "options": {}
+      },
+      "id": "node-009", "name": "Similarity Search", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2000, 300],
+      "credentials": { "httpHeaderAuth": { "id": "PINECONE_CRED", "name": "Pinecone API" } }
+    },
+    {
+      "parameters": { "jsCode": "const matches = $json.matches || [];\nconst query = $('Parse Input').first().json.query;\nconst context = matches.map((m, i) => `[Source ${i+1}] ${m.metadata.source_url}\\n${m.metadata.text}`).join('\\n\\n---\\n\\n');\nconst sources = matches.map(m => ({ url: m.metadata.source_url, relevance: parseFloat(m.score.toFixed(2)) }));\nreturn [{ json: { query, context, sources, chunks_retrieved: matches.length } }];" },
+      "id": "node-010", "name": "Build RAG Context", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a research assistant. Answer based ONLY on the provided context. Always cite your sources.\"},\n    {\"role\": \"user\", \"content\": \"Research query: {{ $json.query }}\\n\\nContext:\\n{{ $json.context }}\\n\\nProvide a comprehensive answer with source citations.\"}\n  ],\n  \"temperature\": 0.3,\n  \"max_tokens\": 1000\n}",
+        "options": {}
+      },
+      "id": "node-011", "name": "GPT-4o Answer Generation", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2440, 300],
+      "credentials": { "httpHeaderAuth": { "id": "OPENAI_CRED", "name": "OpenAI API" } }
+    },
+    {
+      "parameters": { "jsCode": "const answer = $json.choices[0].message.content;\nconst usage = $json.usage;\nconst ragCtx = $('Build RAG Context').first().json;\nreturn [{ json: { answer, sources: ragCtx.sources, chunks_retrieved: ragCtx.chunks_retrieved, tokens_used: usage.total_tokens, model: 'gpt-4o' } }];" },
+      "id": "node-012", "name": "Format Response", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [2660, 300]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ JSON.stringify($json) }}" },
+      "id": "node-013", "name": "Respond to Webhook", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [2880, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Parse Input", "type": "main", "index": 0 }]] },
+    "Parse Input": { "main": [[{ "node": "Apify Web Scraper", "type": "main", "index": 0 }]] },
+    "Apify Web Scraper": { "main": [[{ "node": "Fetch Scraped Results", "type": "main", "index": 0 }]] },
+    "Fetch Scraped Results": { "main": [[{ "node": "Text Chunker", "type": "main", "index": 0 }]] },
+    "Text Chunker": { "main": [[{ "node": "OpenAI Embeddings", "type": "main", "index": 0 }]] },
+    "OpenAI Embeddings": { "main": [[{ "node": "Store in Pinecone", "type": "main", "index": 0 }]] },
+    "Store in Pinecone": { "main": [[{ "node": "Embed Query", "type": "main", "index": 0 }]] },
+    "Embed Query": { "main": [[{ "node": "Similarity Search", "type": "main", "index": 0 }]] },
+    "Similarity Search": { "main": [[{ "node": "Build RAG Context", "type": "main", "index": 0 }]] },
+    "Build RAG Context": { "main": [[{ "node": "GPT-4o Answer Generation", "type": "main", "index": 0 }]] },
+    "GPT-4o Answer Generation": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Format Response": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateCredsSetupCompleted": false, "n8nVersion": "1.94.1" }
+}
