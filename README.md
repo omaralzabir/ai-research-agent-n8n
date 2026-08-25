@@ -140,7 +140,7 @@ Top-k similar chunks are retrieved and passed to GPT-4o with a structured prompt
 ## 👤 Author
 
 **Zabir** — Freelance Automation Developer  
-🔗 [Upwork Profile]([https://www.upwork.com](https://www.upwork.com/freelancers/~016038a1405b233337?mp_source=share)) · 📧 Contact via GitHub
+🔗 [Upwork Profile]([https://www.upwork.com](https://www.upwork.com/freelancers/~016038a1405b233337?mp_source=share) · 📧 Contact via GitHub
 
 ---
 
